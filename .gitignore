@@ -1,0 +1,104 @@
+# Environment variables
+.env
+.env.local
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+.conda/
+venv/
+env/
+environments/
+
+# Build artifacts (incl. compiled CUDA extensions)
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Model weights: download or symlink separately (see README Weights section)
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# Runtime outputs / logs / uploaded inputs
+outputs/
+output/
+logs/
+input/
+*.log
+
+# Large binary data
+*.ply
+*.mmdb
+
+# Codex / local
+.codex/
+
+# VLM / API secrets (never commit)
+.secrets/
+**/secrets/
+*.pem
+*.key
+
+# WorldEngine vendored data (external, symlinked)
+mcp_servers/worldengine/core/data
+# WorldEngine vendored runtime experiment outputs (keep *.py configs tracked)
+# WorldEngine closed-loop sim outputs
+mcp_servers/worldengine/core/experiments/closed_loop_exps/
+mcp_servers/worldengine/core/experiments/posttrain/adagent_policy_trainer_*/
+mcp_servers/worldengine/core/experiments/**/*.pth
+mcp_servers/worldengine/core/experiments/**/*.log
+mcp_servers/worldengine/core/experiments/**/*.log.json
+mcp_servers/worldengine/core/experiments/**/tf_logs/
+mcp_servers/worldengine/core/logs/
+
+# local IDE/runtime
+.sii/
+
+# Local Waymo video library and index (may be a symlink)
+/mcp_servers/sentry_video_search/data_waymo_front
+
+# Per-service task workspaces
+/mcp_servers/*/runtime/
+
+# Local scene datasets (never publish)
+/data/
+
+# Native simulator debug artifacts
+/mcp_servers/worldengine/core/projects/SimEngine/dbg/
+
+# Generated WorldEngine debug outputs
+/mcp_servers/worldengine/core/dbg/
+
+# Private AI handoffs and local research notes
+/docs/private/
+*.bak
+mcp_servers/worldengine_failure_analysis/core/configs/complete.json
+
+# Local repair backups and generated frontend caches
+/.backup_*/
+/frontend/.cache/
+
+# Local audit notes and manual retrieval benchmarks
+/docs/REVIEW_20261114.md
+/test_pipeline.py
+/test_rerank_parallel.py
+/.worktrees/

@@ -1,0 +1,152 @@
+import unittest
+from unittest.mock import patch
+
+from agent.executor import ToolExecutor
+from agent.job_worker import execute_request
+from agent.schemas import validate_tool_result
+
+
+class ToolResultSchemaTests(unittest.TestCase):
+    def test_valid_success_result(self):
+        result = {
+            "status": "success",
+            "tool": "policy_runner",
+            "result": {
+                "result_dir": "/outputs/mock/simulation",
+            },
+        }
+
+        valid, errors = validate_tool_result(result, "policy_runner")
+
+        self.assertTrue(valid)
+        self.assertEqual(errors, [])
+
+    def test_valid_error_result(self):
+        result = {
+            "status": "error",
+            "tool": "policy_runner",
+            "error": {
+                "type": "execution_error",
+                "message": "checkpoint not found",
+            },
+        }
+
+        valid, errors = validate_tool_result(result, "policy_runner")
+
+        self.assertTrue(valid)
+        self.assertEqual(errors, [])
+
+    def test_missing_status(self):
+        result = {
+            "tool": "policy_runner",
+            "result": {},
+        }
+
+        valid, errors = validate_tool_result(result, "policy_runner")
+
+        self.assertFalse(valid)
+        self.assertIn("status must be one of: success, error, running", errors)
+
+    def test_tool_name_mismatch(self):
+        result = {
+            "status": "success",
+            "tool": "video_retriever",
+            "result": {},
+        }
+
+        valid, errors = validate_tool_result(result, "policy_runner")
+
+        self.assertFalse(valid)
+        self.assertIn(
+            "tool mismatch: expected policy_runner, got video_retriever",
+            errors,
+        )
+
+    def test_success_requires_result(self):
+        result = {
+            "status": "success",
+            "tool": "policy_runner",
+        }
+
+        valid, errors = validate_tool_result(result, "policy_runner")
+
+        self.assertFalse(valid)
+        self.assertIn("success result must contain result", errors)
+
+    def test_error_requires_error_object(self):
+        result = {
+            "status": "error",
+            "tool": "policy_runner",
+        }
+
+        valid, errors = validate_tool_result(result, "policy_runner")
+
+        self.assertFalse(valid)
+        self.assertIn("error result must contain an error object", errors)
+
+
+class ToolExecutorTests(unittest.TestCase):
+    def setUp(self):
+        self.executor = ToolExecutor(
+            tool_modes={
+                "scene_instance_generator": "mock",
+                "policy_runner": "mock",
+            }
+        )
+
+    @patch("tools.registry.call_tool")
+    def test_executor_passes_through_valid_result(self, mock_call_tool):
+        mock_call_tool.return_value = {
+            "status": "success",
+            "tool": "scene_instance_generator",
+            "result": {"scene_plan": "ok"},
+        }
+
+        result = execute_request(dict(tool="scene_instance_generator", mode="mock", arguments={"scene_requirement": {}}))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["tool"], "scene_instance_generator")
+        self.assertEqual(result["result"], {"scene_plan": "ok"})
+        mock_call_tool.assert_called_once_with(
+            "scene_instance_generator",
+            {"scene_requirement": {}},
+            mode="mock",
+        )
+
+    @patch("tools.registry.call_tool")
+    def test_executor_normalizes_invalid_result(self, mock_call_tool):
+        mock_call_tool.return_value = {
+            "success": True,
+            "data": {},
+        }
+
+        result = execute_request(dict(tool="policy_runner", mode="mock", arguments={}))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["tool"], "policy_runner")
+        self.assertEqual(
+            result["error"]["type"],
+            "invalid_tool_result",
+        )
+        self.assertTrue(result["error"]["validation_errors"])
+
+    @patch("tools.registry.call_tool")
+    def test_executor_normalizes_tool_exception(self, mock_call_tool):
+        mock_call_tool.side_effect = RuntimeError("backend failed")
+
+        result = execute_request(dict(tool="policy_runner", mode="mock", arguments={}))
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["tool"], "policy_runner")
+        self.assertEqual(
+            result["error"]["type"],
+            "execution_error",
+        )
+        self.assertEqual(
+            result["error"]["message"],
+            "backend failed",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

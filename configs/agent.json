@@ -1,0 +1,23 @@
+{
+  "agent": {
+    "max_steps": 20
+  },
+  "orchestrator": {
+    "decision_correction_attempts": 5
+  },
+  "tools": {
+    "modes": {
+      "failure_analyzer": "real",
+      "scene_instance_generator": "real",
+      "video_retriever": "real",
+      "edit_planner": "real",
+      "attack_vehicle_editor": "real",
+      "policy_runner": "real",
+      "failure_case_filter": "real",
+      "policy_trainer": "real"
+    }
+  },
+  "logging": {
+    "root_dir": "logs"
+  }
+}

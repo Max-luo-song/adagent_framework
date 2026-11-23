@@ -1,0 +1,70 @@
+"""Task isolation and adapter compatibility without loading GPU models."""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from mcp_servers.runtime import current_run, runtime_task
+
+
+
+
+def test_simulation_directs_backend_into_distinct_output_dirs(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIMENGINE_PYTHON", sys.executable)
+    monkeypatch.setenv('WORLDENGINE_LIBRARY_DIR',str(tmp_path))
+    monkeypatch.setenv('LD_LIBRARY_PATH','/fixture/existing')
+    from mcp_servers.worldengine.adapter.config import WorldEngineConfig
+    from mcp_servers.worldengine.adapter.service import run_simulation
+    script = tmp_path / "simulate.sh"
+    script.write_text('test "$LD_LIBRARY_PATH" = "$WORLDENGINE_LIBRARY_DIR:/fixture/existing" || exit 7\nmkdir -p "$WORLDENGINE_TEST_PATH/WE_output"\nprintf \'[{"succeeded": true,"scenario_name":"scene_0"}]\' > "$WORLDENGINE_TEST_PATH/runner_report_0.json"\nprintf \'{"status":"completed","scope":"full_rollout_pdm","scenes":[{"scene_id":"scene_0","status":"completed"}]}\' > "$WORLDENGINE_TEST_PATH/WE_output/pdm_evaluation_scope.json"\n')
+    config_file, checkpoint = tmp_path / "cfg.py", tmp_path / "model.pth"
+    config_file.touch(); checkpoint.touch()
+    scenes = tmp_path / "data/sim_engine/scenarios/original/same"
+    scenes.mkdir(parents=True)
+    import pickle
+    with (scenes / "all_scenarios.pkl").open("wb") as stream:
+        pickle.dump({"scene_0": {"token": "scene_0"}}, stream)
+    config = WorldEngineConfig(project_root=tmp_path, script=script)
+    results = [run_simulation(str(config_file), str(checkpoint), "same", "same", config=config) for _ in range(2)]
+    assert results[0]["result_dir"] != results[1]["result_dir"]
+    for result in results:
+        root = Path(result["run_dir"])
+        assert Path(result["result_dir"]).is_relative_to(root / "output")
+        assert Path(result["log_path"]).is_relative_to(root / "logs")
+        assert result["reports"] == [[{"succeeded": True,"scenario_name":"scene_0"}]]
+        assert result['evaluation_scope']['scope']=='full_rollout_pdm'
+    assert not (tmp_path / "experiments/closed_loop_exps").exists()
+
+def test_training_ignores_stale_checkpoints_and_keeps_export(tmp_path, stub_training_preparation):
+    from mcp_servers.worldengine.adapter.training import train_policy
+    core = tmp_path / "core"
+    script = core / "projects/AlgEngine/scripts/train.py"
+    script.parent.mkdir(parents=True)
+    script.write_text('import sys,json\nfrom pathlib import Path\np=Path(sys.argv[sys.argv.index("--work-dir")+1]);(p/"epoch_1.pth").write_text("fresh")\n(p/"training_audit.json").write_text(json.dumps({"finite_losses":True,"changed_parameter_count":1,"losses":{"loss":0.25}}))\nprint("loss.imi: 0.25")\n')
+    files = {}
+    for name in ("ann", "tokens", "base", "config"):
+        files[name] = tmp_path / name
+        files[name].touch()
+    export = tmp_path / "exports"; export.mkdir()
+    (export / "epoch_99.pth").write_bytes(b"stale")
+    result = train_policy({
+        "training_data": {"ann_file": str(files["ann"]), "token_file": str(files["tokens"])},
+        "base_checkpoint": str(files["base"]), "config_path": str(files["config"]),
+        "worldengine_root": str(core), "python": sys.executable, "work_dir": str(export),
+    })
+    assert Path(result["checkpoint"]).read_bytes() == b"fresh"
+    assert Path(result["checkpoint"]).is_relative_to(Path(result["run_dir"]) / "output")
+    assert result["final_loss"] == 0.25
+    assert (Path(result["export_dir"]) / "epoch_1.pth").read_bytes() == b"fresh"
+    assert (export / "epoch_99.pth").read_bytes() == b"stale"
+
+def test_failure_filter_rejects_missing_official_scores(tmp_path):
+    from mcp_servers.worldengine.adapter.evaluation import filter_failure_cases
+    with pytest.raises(ValueError, match="result_dir"):
+        filter_failure_cases({"scenario_pkl": str(tmp_path / "scene.pkl")})

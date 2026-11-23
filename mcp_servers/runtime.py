@@ -1,0 +1,95 @@
+"""Per-task workspaces shared by service adapters (no model dependencies)."""
+from __future__ import annotations
+import contextvars
+import subprocess
+import functools
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+from common.trace_io import TRACE as _TRACE, safe as _safe, trace_context, write_json
+
+
+_ACTIVE = contextvars.ContextVar("service_runs", default={})
+ROOT = Path(__file__).resolve().parent
+
+
+class Run:
+    def __init__(self, service, operation, *, directory=None):
+        self.service, self.operation = service, operation
+        if directory is None:
+            root = Path(os.environ["ADAGENT_RUNTIME_ROOT"]).expanduser() / service if os.getenv("ADAGENT_RUNTIME_ROOT") else ROOT / service / "runtime"
+            directory = root / (datetime.now(timezone.utc).strftime("run_%Y%m%d_%H%M%S_") + uuid4().hex[:12])
+            directory.mkdir(parents=True, exist_ok=False)
+        self.root = Path(directory).resolve()
+        self.input = self.root / "input"
+        self.logs = self.root / "logs"
+        self.output = self.root / "output"
+        for p in (self.input, self.logs, self.output):
+            p.mkdir(parents=True, exist_ok=True)
+        self.manifest = {"run_id": self.root.name, "service": service, "operation": operation,
+                         "run_dir": str(self.root), "started_at": datetime.now(timezone.utc).isoformat(),
+                         "status": "running"}
+        if directory is not None and (self.root / "manifest.json").is_file():
+            self.manifest = json.loads((self.root / "manifest.json").read_text())
+        if "owner_pid" not in self.manifest:
+            self.manifest["owner_pid"] = os.getpid()
+        for field in ("agent_run_id", "tool_call_id", "parent_run_id", "agent_log_dir", "stage", "step"):
+            value = _TRACE.get().get(field) or os.getenv("ADAGENT_" + field.upper())
+            if value:
+                self.manifest[field] = value
+        self.update()
+
+    def update(self, **fields):
+        self.manifest.update(fields)
+        write_json(self.root / "manifest.json", self.manifest)
+
+    def child_env(self):
+        env = {**os.environ, "ADAGENT_ACTIVE_SERVICE": self.service, "ADAGENT_ACTIVE_RUN": str(self.root)}
+        for field in ("agent_run_id", "tool_call_id", "parent_run_id", "agent_log_dir", "stage", "step"):
+            if self.manifest.get(field):
+                env["ADAGENT_" + field.upper()] = str(self.manifest[field])
+        return env
+
+
+def current_run(service):
+    return _ACTIVE.get()[service]
+
+
+def runtime_task(service, operation):
+    """Allocate a task; nested calls and explicit child processes share it."""
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapped(*args, **kwargs):
+            if service in _ACTIVE.get():
+                return fn(*args, **kwargs)
+            inherited = os.getenv("ADAGENT_ACTIVE_RUN") if os.getenv("ADAGENT_ACTIVE_SERVICE") == service else None
+            run = Run(service, operation, directory=Path(inherited) if inherited else None)
+            token = _ACTIVE.set({**_ACTIVE.get(), service: run})
+            try:
+                if not inherited:
+                    write_json(run.input / "request.json", {"args": args, "kwargs": kwargs})
+                result = fn(*args, **kwargs)
+                if isinstance(result, dict):
+                    result.setdefault("run_dir", str(run.root))
+                payload = _safe(result)
+                if isinstance(payload, dict):
+                    payload = {"status": "success", **payload}
+                else:
+                    payload = {"status": "success", "result": payload}
+                write_json(run.output / "result.json", payload)
+                run.update(status="success", finished_at=datetime.now(timezone.utc).isoformat())
+                return result
+            except BaseException as exc:
+                state = "cancelled" if isinstance(exc, KeyboardInterrupt) else "timed_out" if isinstance(exc, subprocess.TimeoutExpired) else "error"
+                recorded = json.loads((run.root / "manifest.json").read_text())
+                if state == "error" and recorded.get("status") in {"cancelled", "timed_out"}:
+                    state = recorded["status"]
+                run.update(status=state, error_type=type(exc).__name__, finished_at=datetime.now(timezone.utc).isoformat())
+                raise
+            finally:
+                _ACTIVE.reset(token)
+        return wrapped
+    return decorate

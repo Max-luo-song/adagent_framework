@@ -1,0 +1,148 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from agent.config import AgentConfig, DEFAULT_CONFIG_PATH, PROJECT_ROOT
+from agent.executor import ToolExecutor
+
+
+DEFAULT_MODES = {
+    "attack_vehicle_editor": "mock",
+    "ego_trajectory_editor": "mock",
+    "failure_analyzer": "real",
+    "scene_instance_generator": "real",
+    "video_retriever": "real",
+    "edit_planner": "real",
+    "policy_runner": "real",
+    "failure_case_filter": "real",
+    "policy_trainer": "real",
+}
+
+
+class AgentConfigTests(unittest.TestCase):
+    def _write_config(self, data):
+        temp_dir = tempfile.TemporaryDirectory()
+        path = Path(temp_dir.name) / "agent.json"
+        with path.open("w", encoding="utf-8") as file:
+            json.dump(data, file)
+        return temp_dir, path
+
+    def test_default_path_loads_current_runtime_settings(self):
+        expected = json.loads(DEFAULT_CONFIG_PATH.read_text())
+        config = AgentConfig.load()
+
+        self.assertEqual(config.max_steps, expected['agent']['max_steps'])
+        self.assertEqual(config.decision_correction_attempts, expected['orchestrator']['decision_correction_attempts'])
+        self.assertEqual(config.tool_modes, expected['tools']['modes'])
+        self.assertEqual(config.logs_root, PROJECT_ROOT / expected['logging']['root_dir'])
+
+    def test_custom_config_loads(self):
+        custom_modes = dict(DEFAULT_MODES)
+        custom_modes["video_retriever"] = "mock"
+        custom_modes["policy_runner"] = "mock"
+
+        temp_dir, path = self._write_config(
+            {
+                "agent": {"max_steps": 20},
+                "orchestrator": {"decision_correction_attempts": 2},
+                "tools": {"modes": custom_modes},
+                "logging": {"root_dir": "custom_logs"},
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        config = AgentConfig.load(path)
+
+        self.assertEqual(config.max_steps, 20)
+        self.assertEqual(config.decision_correction_attempts, 2)
+        self.assertEqual(config.tool_modes, custom_modes)
+        self.assertEqual(config.logs_root, PROJECT_ROOT / "custom_logs")
+
+    def test_max_steps_must_be_positive_integer(self):
+        temp_dir, path = self._write_config(
+            {
+                "agent": {"max_steps": 0},
+                "orchestrator": {"decision_correction_attempts": 1},
+                "tools": {"modes": DEFAULT_MODES},
+                "logging": {"root_dir": "logs"},
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "agent.max_steps must be a positive integer",
+        ):
+            AgentConfig.load(path)
+
+    def test_correction_attempts_must_be_non_negative(self):
+        temp_dir, path = self._write_config(
+            {
+                "agent": {"max_steps": 10},
+                "orchestrator": {"decision_correction_attempts": -1},
+                "tools": {"modes": DEFAULT_MODES},
+                "logging": {"root_dir": "logs"},
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        with self.assertRaisesRegex(ValueError, "decision_correction_attempts"):
+            AgentConfig.load(path)
+
+    def test_invalid_tool_mode_fails(self):
+        modes = dict(DEFAULT_MODES)
+        modes["policy_runner"] = "remote"
+
+        temp_dir, path = self._write_config(
+            {
+                "agent": {"max_steps": 10},
+                "orchestrator": {"decision_correction_attempts": 1},
+                "tools": {"modes": modes},
+                "logging": {"root_dir": "logs"},
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "tools.modes.policy_runner must be one of: mock, real",
+        ):
+            AgentConfig.load(path)
+
+    def test_missing_tool_mode_fails(self):
+        modes = dict(DEFAULT_MODES)
+        modes.pop("policy_runner")
+
+        temp_dir, path = self._write_config(
+            {
+                "agent": {"max_steps": 10},
+                "orchestrator": {"decision_correction_attempts": 1},
+                "tools": {"modes": modes},
+                "logging": {"root_dir": "logs"},
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        with self.assertRaisesRegex(ValueError, "tools.modes is missing tools"):
+            AgentConfig.load(path)
+
+    def test_missing_required_fields_fails(self):
+        temp_dir, path = self._write_config(
+            {
+                "agent": {"max_steps": 10},
+            }
+        )
+        self.addCleanup(temp_dir.cleanup)
+
+        with self.assertRaisesRegex(ValueError, "missing required fields"):
+            AgentConfig.load(path)
+
+    def test_executor_can_use_custom_modes(self):
+        executor = ToolExecutor(tool_modes=DEFAULT_MODES)
+        self.assertEqual(executor.tool_modes["video_retriever"], "real")
+        self.assertEqual(executor.tool_modes["failure_analyzer"], "real")
+
+
+if __name__ == "__main__":
+    unittest.main()
